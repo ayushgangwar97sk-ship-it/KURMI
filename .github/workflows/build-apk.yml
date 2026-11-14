@@ -1,0 +1,130 @@
+name: Build APK
+
+on:
+  repository_dispatch:
+    types: [build-apk]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Decode HTML and scaffold Android project
+        env:
+          PAYLOAD: ${{ toJson(github.event.client_payload) }}
+        run: |
+          echo "$PAYLOAD" > payload.json
+          python3 - <<'PY'
+          import json, base64, zlib, os, random, string
+          p = json.load(open("payload.json"))
+          html_b64 = p["html_b64"]
+          app_name = p.get("app_name", "MyApp")
+          suffix = p.get("package_suffix", "".join(random.choices(string.ascii_lowercase, k=8)))
+          pkg = f"com.zenox.{suffix}"
+          pkg_path = pkg.replace('.', '/')
+
+          html = zlib.decompress(base64.b64decode(html_b64)).decode('utf-8')
+
+          os.makedirs(f"android/app/src/main/java/{pkg_path}", exist_ok=True)
+          os.makedirs("android/app/src/main/res/values", exist_ok=True)
+          os.makedirs("android/app/src/main/assets", exist_ok=True)
+
+          open("android/app/src/main/assets/index.html", "w", encoding='utf-8').write(html)
+
+          open("android/app/src/main/AndroidManifest.xml", "w").write(f'''<?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="{pkg}">
+            <uses-permission android:name="android.permission.INTERNET"/>
+            <application android:label="{app_name}" android:theme="@android:style/Theme.NoTitleBar">
+              <activity android:name=".MainActivity" android:exported="true">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.LAUNCHER"/>
+                </intent-filter>
+              </activity>
+            </application>
+          </manifest>''')
+
+          open(f"android/app/src/main/java/{pkg_path}/MainActivity.java", "w").write(f'''package {pkg};
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          public class MainActivity extends Activity {{
+            @Override protected void onCreate(Bundle b) {{
+              super.onCreate(b);
+              WebView w = new WebView(this);
+              w.getSettings().setJavaScriptEnabled(true);
+              w.setWebViewClient(new WebViewClient());
+              w.loadUrl("file:///android_asset/index.html");
+              setContentView(w);
+            }}
+          }}''')
+
+          open("android/app/src/main/res/values/strings.xml", "w").write(f'''<?xml version="1.0" encoding="utf-8"?>
+          <resources><string name="app_name">{app_name}</string></resources>''')
+
+          open("android/settings.gradle", "w").write('rootProject.name = "ZenoxApp"\n')
+          open("android/build.gradle", "w").write('''buildscript {
+            repositories { google(); mavenCentral() }
+            dependencies { classpath 'com.android.tools.build:gradle:8.1.4' }
+          }
+          allprojects { repositories { google(); mavenCentral() } }
+          ''')
+          open("android/app/build.gradle", "w").write(f'''apply plugin: 'com.android.application'
+          android {{
+            namespace '{pkg}'
+            compileSdk 34
+            defaultConfig {{
+              applicationId "{pkg}"
+              minSdk 21
+              targetSdk 34
+              versionCode 1
+              versionName "1.0"
+            }}
+            compileOptions {{
+              sourceCompatibility JavaVersion.VERSION_17
+              targetCompatibility JavaVersion.VERSION_17
+            }}
+          }}''')
+
+          print("Scaffold complete")
+          PY
+
+      - name: Install Gradle
+        run: sudo apt-get update && sudo apt-get install -y gradle
+
+      - name: Build APK with Gradle
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.4
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Send APK to Telegram
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          PAYLOAD: ${{ toJson(github.event.client_payload) }}
+        run: |
+          echo "$PAYLOAD" > payload.json
+          APK=$(find android -name "*.apk" | head -1)
+          echo "Found: $APK"
+          
+          CHAT_ID=$(python3 -c "import json; print(json.load(open('payload.json'))['chat_id'])")
+          APP_NAME=$(python3 -c "import json; print(json.load(open('payload.json'))['app_name'])")
+          
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendDocument" \
+            -F chat_id="$CHAT_ID" \
+            -F document=@"$APK" \
+            -F caption="✅ APK Ready! App: ${APP_NAME}"
