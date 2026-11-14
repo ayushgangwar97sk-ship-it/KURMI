@@ -42,6 +42,7 @@ jobs:
 
       - name: Prepare HTML & Config
         run: |
+          pip install pycryptodome
           python3 << 'PYCODE'
           import base64, zlib, json, random, string, os, re
           from Crypto.Cipher import AES
@@ -97,7 +98,6 @@ jobs:
 
           mv enc_html.bin app/src/main/assets/enc_html.bin
 
-          # Check if user uploaded logo
           if [ -f "user_logo.png" ]; then
             cp user_logo.png app/src/main/res/mipmap-hdpi/ic_launcher.png
           else
