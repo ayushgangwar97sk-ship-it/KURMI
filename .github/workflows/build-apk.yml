@@ -21,23 +21,29 @@ jobs:
       - name: Setup Android SDK & Accept Licenses
         run: |
           sudo apt-get update
-          sudo apt-get install -y android-sdk wget unzip
-          
-          echo "ANDROID_HOME=/usr/lib/android-sdk" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=/usr/lib/android-sdk" >> $GITHUB_ENV
-          
-          wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
-          mkdir -p $ANDROID_HOME/cmdline-tools
-          unzip -q cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools
-          mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
-          
-          export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
-          yes | sdkmanager "build-tools;34.0.0" "platforms;android-34" || true
+          sudo apt-get install -y wget unzip openjdk-17-jdk
 
-          mkdir -p $ANDROID_HOME/licenses
-          echo -e "\n24333f8a63b6825ea9c5514f83c2829b004d1fee" > $ANDROID_HOME/licenses/android-sdk-license
-          mkdir -p ~/.android
-          echo -e "\n24333f8a63b6825ea9c5514f83c2829b004d1fee" > ~/.android/licenses
+          # Clean SDK installation
+          mkdir -p $HOME/android-sdk/cmdline-tools
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
+          unzip -q cmdline-tools.zip -d $HOME/android-sdk/cmdline-tools
+          mv $HOME/android-sdk/cmdline-tools/cmdline-tools $HOME/android-sdk/cmdline-tools/latest
+
+          # Set environment variables
+          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$HOME/android-sdk/platform-tools" >> $GITHUB_PATH
+
+          export ANDROID_HOME=$HOME/android-sdk
+          export ANDROID_SDK_ROOT=$HOME/android-sdk
+          export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
+
+          # Accept ALL licenses properly
+          yes | sdkmanager --licenses > /dev/null
+
+          # Install required packages
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
       - name: Prepare HTML & Config
         run: |
@@ -177,6 +183,11 @@ jobs:
                       signingConfig signingConfigs.release
                   }
               }
+              externalNativeBuild {
+                  cmake {
+                      path "src/main/jni/CMakeLists.txt"
+                  }
+              }
           }
           APPGRADLE
 
@@ -193,20 +204,28 @@ jobs:
           allprojects { repositories { google(); mavenCentral() } }
           GRADLE
 
+          # Create gradle.properties for better compatibility
+          cat > gradle.properties << PROP
+          android.useAndroidX=true
+          android.enableJetifier=true
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          PROP
+
       - name: Setup Gradle 8.2
         uses: gradle/gradle-build-action@v2
         with:
           gradle-version: 8.2
 
       - name: Build APK
-        run: gradle assembleRelease --no-daemon
+        run: |
+          gradle assembleRelease --no-daemon --stacktrace
 
       - name: Send APK to Telegram
         run: |
           CHAT_ID=$(python3 -c "import json; print(json.load(open('config.json'))['chat'])")
           APK_PATH="app/build/outputs/apk/release/app-release.apk"
           if [ -f "$APK_PATH" ]; then
-            curl -s -F "chat_id=$CHAT_ID" -F "document=@$APK_PATH" -F "caption=✅ Aᴘᴋ Bᴜɪʟᴅ Sᴜᴄᴄᴇssꜰᴜʟʟʏ! 🚀" "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument"
+            curl -s -F "chat_id=$CHAT_ID" -F "document=@\( APK_PATH" -F "caption=✅ Aᴘᴋ Bᴜɪʟᴅ Sᴜᴄᴄᴇssꜰᴜʟʟʏ! 🚀" "https://api.telegram.org/bot \){{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument"
           else
             echo "❌ Fᴀɪʟᴇᴅ!" && exit 1
           fi
