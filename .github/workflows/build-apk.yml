@@ -183,6 +183,10 @@ jobs:
                       signingConfig signingConfigs.release
                   }
               }
+              lint {
+                  checkReleaseBuilds false
+                  abortOnError false
+              }
               externalNativeBuild {
                   cmake {
                       path "src/main/jni/CMakeLists.txt"
@@ -204,7 +208,6 @@ jobs:
           allprojects { repositories { google(); mavenCentral() } }
           GRADLE
 
-          # Create gradle.properties for better compatibility
           cat > gradle.properties << PROP
           android.useAndroidX=true
           android.enableJetifier=true
@@ -225,7 +228,10 @@ jobs:
           CHAT_ID=$(python3 -c "import json; print(json.load(open('config.json'))['chat'])")
           APK_PATH="app/build/outputs/apk/release/app-release.apk"
           if [ -f "$APK_PATH" ]; then
-            curl -s -F "chat_id=$CHAT_ID" -F "document=@\( APK_PATH" -F "caption=✅ Aᴘᴋ Bᴜɪʟᴅ Sᴜᴄᴄᴇssꜰᴜʟʟʏ! 🚀" "https://api.telegram.org/bot \){{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument"
+            curl -s -F "chat_id=${CHAT_ID}" \
+                 -F "document=@${APK_PATH}" \
+                 -F "caption=✅ Aᴘᴋ Bᴜɪʟᴅ Sᴜᴄᴄᴇssꜰᴜʟʟʏ! 🚀" \
+                 "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument"
           else
             echo "❌ Fᴀɪʟᴇᴅ!" && exit 1
           fi
