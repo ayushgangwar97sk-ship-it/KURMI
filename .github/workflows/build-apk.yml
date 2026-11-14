@@ -1,4 +1,4 @@
-name: Build APK
+name: Build Secure APK
 
 on:
   repository_dispatch:
@@ -7,13 +7,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -22,109 +21,469 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Decode HTML and scaffold Android project
-        env:
-          PAYLOAD: ${{ toJson(github.event.client_payload) }}
+      - name: Prepare HTML & Config
         run: |
-          echo "$PAYLOAD" > payload.json
-          python3 - <<'PY'
-          import json, base64, zlib, os, random, string
-          p = json.load(open("payload.json"))
-          html_b64 = p["html_b64"]
-          app_name = p.get("app_name", "MyApp")
-          suffix = p.get("package_suffix", "".join(random.choices(string.ascii_lowercase, k=8)))
-          pkg = f"com.zenox.{suffix}"
-          pkg_path = pkg.replace('.', '/')
+          python3 << 'PYCODE'
+          import base64, zlib, json, random, string, os, re
 
-          html = zlib.decompress(base64.b64decode(html_b64)).decode('utf-8')
+          # Decode HTML
+          html_b64 = "${{ github.event.client_payload.html_b64 }}"
+          try:
+              html = zlib.decompress(base64.b64decode(html_b64)).decode('utf-8')
+          except:
+              html = html_b64
 
-          os.makedirs(f"android/app/src/main/java/{pkg_path}", exist_ok=True)
-          os.makedirs("android/app/src/main/res/values", exist_ok=True)
-          os.makedirs("android/app/src/main/assets", exist_ok=True)
+          # Replace Telegram links to open in browser
+          html = re.sub(r'tg://join\?invite=([a-zA-Z0-9_\-]+)', r'https://t.me/joinchat/\1', html)
+          html = re.sub(r'tg:join\?invite=([a-zA-Z0-9_\-]+)', r'https://t.me/joinchat/\1', html)
 
-          open("android/app/src/main/assets/index.html", "w", encoding='utf-8').write(html)
+          # App name
+          app_name = "${{ github.event.client_payload.app_name }}"
+          if not app_name or app_name == 'None':
+              app_name = 'ZENOX'
 
-          open("android/app/src/main/AndroidManifest.xml", "w").write(f'''<?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="{pkg}">
-            <uses-permission android:name="android.permission.INTERNET"/>
-            <application android:label="{app_name}" android:theme="@android:style/Theme.NoTitleBar">
-              <activity android:name=".MainActivity" android:exported="true">
-                <intent-filter>
-                  <action android:name="android.intent.action.MAIN"/>
-                  <category android:name="android.intent.category.LAUNCHER"/>
-                </intent-filter>
-              </activity>
-            </application>
-          </manifest>''')
+          # Random package suffix
+          pkg_suffix = random.choice(string.ascii_lowercase) + ''.join(random.choices(string.ascii_lowercase + string.digits, k=7))
 
-          open(f"android/app/src/main/java/{pkg_path}/MainActivity.java", "w").write(f'''package {pkg};
+          # Save config
+          with open('config.json', 'w') as f:
+              json.dump({
+                  'name': app_name,
+                  'pkg': pkg_suffix,
+                  'chat': "${{ github.event.client_payload.chat_id }}"
+              }, f)
+
+          # Save HTML as base64 (without compression to avoid issues)
+          html_b64_encoded = base64.b64encode(html.encode('utf-8')).decode('ascii')
+          with open('html_b64.txt', 'w') as f:
+              f.write(html_b64_encoded)
+
+          print(f"✔ App: {app_name}")
+          print(f"✔ Package: com.zenox.{pkg_suffix}")
+          print(f"✔ HTML Size: {len(html)} bytes")
+          PYCODE
+
+      - name: Build Secure APK
+        run: |
+          APP_NAME=$(python3 -c "import json; print(json.load(open('config.json'))['name'])")
+          PKG_SUFFIX=$(python3 -c "import json; print(json.load(open('config.json'))['pkg'])")
+          PKG_NAME="com.zenox.${PKG_SUFFIX}"
+          HTML_B64=$(cat html_b64.txt)
+
+          mkdir -p app/src/main/jni
+          mkdir -p app/src/main/java/$(echo $PKG_NAME | tr '.' '/')
+          mkdir -p app/src/main/res/layout
+          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/drawable
+
+          # ===== Native C++ with HTML (Secure) =====
+          cat > app/src/main/jni/native-lib.cpp << CPPEOF
+          #include <jni.h>
+          #include <string>
+          #include <android/log.h>
+
+          #define LOG_TAG "ZenoxSecure"
+          #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+
+          extern "C" JNIEXPORT jstring JNICALL
+          Java_${PKG_NAME//./_}_MainActivity_getHTML(JNIEnv *env, jobject thiz) {
+              std::string html = "${HTML_B64}";
+              return env->NewStringUTF(html.c_str());
+          }
+
+          extern "C" JNIEXPORT jstring JNICALL
+          Java_${PKG_NAME//./_}_MainActivity_getCredits(JNIEnv *env, jobject thiz) {
+              std::string credits = 
+                  "🚀 Aᴘᴘ Lɪɴᴋ Bʏ :- @ZENOX_DEVELOPING_BOT\n\n"
+                  "👨‍💻 Dᴇᴠᴇʟᴏᴘᴇʀ Bʏ :- @BOSS_ZENOX\n\n"
+                  "⚡ Pᴏᴡᴇʀᴇᴅ Bʏ :- Zᴇɴᴏx Dᴇᴠᴇʟᴏᴘᴍᴇɴᴛ\n\n"
+                  "🔰 Oʀɪɢɪɴᴀʟ Cʀᴇᴅɪᴛs Bʏ Kᴇᴇᴘ Mᴜsɪᴄ Bᴇᴀᴛ\n\n"
+                  "❌ Dᴏɴ'ᴛ Rᴇɴᴏᴠᴇ • Dᴏɴ'ᴛ Cʜᴀɴɢᴇ Cʀᴇᴅɪᴛs\n\n"
+                  "🔒 Fᴀsᴛ • Sᴇᴄᴜʀᴇ • Rᴇʟɪᴀʙʟᴇ Bᴜɪʟᴅ Sʏsᴛᴇᴍ\n\n"
+                  "💎 Tʜᴀɴᴋs Fᴏʀ Uꜱɪɴɢ Zᴇɴᴏx Dᴇᴠᴇʟᴏᴘᴍᴇɴᴛ\n\n"
+                  "©️ Zᴇɴᴏx Dᴇᴠᴇʟᴏᴘᴍᴇɴᴛ 2026";
+              return env->NewStringUTF(credits.c_str());
+          }
+          CPPEOF
+
+          # ===== CMakeLists.txt =====
+          cat > app/src/main/jni/CMakeLists.txt << CMAKEEOF
+          cmake_minimum_required(VERSION 3.22.1)
+          project("ZenoxSecure")
+          add_library(ZenoxSecure SHARED native-lib.cpp)
+          find_library(log-lib log)
+          target_link_libraries(ZenoxSecure \${log-lib})
+          CMAKEEOF
+
+          # ===== AndroidManifest.xml =====
+          cat > app/src/main/AndroidManifest.xml << MANIFEST
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+              
+              <application
+                  android:label="${APP_NAME}"
+                  android:icon="@drawable/ic_launcher"
+                  android:usesCleartextTraffic="true"
+                  android:allowBackup="false"
+                  android:theme="@style/AppTheme"
+                  android:hardwareAccelerated="true">
+                  
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden"
+                      android:theme="@style/AppTheme"
+                      android:launchMode="singleTop">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          MANIFEST
+
+          # ===== MainActivity.java =====
+          cat > app/src/main/java/${PKG_NAME//.//}/MainActivity.java << JAVAEOF
+          package ${PKG_NAME};
+
           import android.app.Activity;
           import android.os.Bundle;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
-          public class MainActivity extends Activity {{
-            @Override protected void onCreate(Bundle b) {{
-              super.onCreate(b);
-              WebView w = new WebView(this);
-              w.getSettings().setJavaScriptEnabled(true);
-              w.setWebViewClient(new WebViewClient());
-              w.loadUrl("file:///android_asset/index.html");
-              setContentView(w);
-            }}
-          }}''')
+          import android.webkit.WebSettings;
+          import android.webkit.WebChromeClient;
+          import android.webkit.CookieManager;
+          import android.util.Base64;
+          import android.util.Log;
+          import android.os.Debug;
+          import android.os.Build;
+          import android.net.Uri;
+          import android.content.Intent;
+          import android.graphics.Bitmap;
+          import android.view.View;
+          import android.widget.ProgressBar;
+          import android.webkit.WebResourceError;
+          import android.webkit.WebResourceRequest;
 
-          open("android/app/src/main/res/values/strings.xml", "w").write(f'''<?xml version="1.0" encoding="utf-8"?>
-          <resources><string name="app_name">{app_name}</string></resources>''')
+          public class MainActivity extends Activity {
+              private WebView webView;
+              private ProgressBar progressBar;
+              private static final String TAG = "ZenoxSecure";
 
-          open("android/settings.gradle", "w").write('rootProject.name = "ZenoxApp"\n')
-          open("android/build.gradle", "w").write('''buildscript {
-            repositories { google(); mavenCentral() }
-            dependencies { classpath 'com.android.tools.build:gradle:8.1.4' }
+              static {
+                  System.loadLibrary("ZenoxSecure");
+              }
+
+              public native String getHTML();
+              public native String getCredits();
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  if (isDebuggerConnected() || isEmulator()) {
+                      finishAndRemoveTask();
+                      return;
+                  }
+
+                  setContentView(R.layout.activity_main);
+
+                  webView = findViewById(R.id.webView);
+                  progressBar = findViewById(R.id.progressBar);
+
+                  WebSettings settings = webView.getSettings();
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+                  settings.setLoadWithOverviewMode(true);
+                  settings.setUseWideViewPort(true);
+                  settings.setBuiltInZoomControls(false);
+                  settings.setDisplayZoomControls(false);
+                  settings.setSupportZoom(false);
+                  settings.setMediaPlaybackRequiresUserGesture(false);
+                  settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+                  settings.setAllowFileAccess(false);
+                  settings.setAllowContentAccess(false);
+                  settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+
+                  CookieManager.getInstance().setAcceptCookie(true);
+
+                  webView.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                          progressBar.setVisibility(View.VISIBLE);
+                      }
+
+                      @Override
+                      public void onPageFinished(WebView view, String url) {
+                          progressBar.setVisibility(View.GONE);
+                      }
+
+                      @Override
+                      public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                          progressBar.setVisibility(View.GONE);
+                          Log.e(TAG, "WebView error: " + error.getDescription());
+                      }
+
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                          if (url.startsWith("tg://") || url.startsWith("tg:")) {
+                              try {
+                                  Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                                  startActivity(intent);
+                                  return true;
+                              } catch (Exception e) {
+                                  try {
+                                      String cleanUrl = url.replace("tg://join?invite=", "https://t.me/joinchat/");
+                                      cleanUrl = cleanUrl.replace("tg:join?invite=", "https://t.me/joinchat/");
+                                      Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(cleanUrl));
+                                      startActivity(browserIntent);
+                                      return true;
+                                  } catch (Exception ex) {
+                                      return false;
+                                  }
+                              }
+                          }
+                          if (url.startsWith("http://") || url.startsWith("https://")) {
+                              try {
+                                  Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                                  startActivity(intent);
+                                  return true;
+                              } catch (Exception e) {
+                                  return false;
+                              }
+                          }
+                          return false;
+                      }
+                  });
+
+                  webView.setWebChromeClient(new WebChromeClient());
+
+                  try {
+                      String htmlB64 = getHTML();
+                      if (htmlB64 == null || htmlB64.isEmpty()) {
+                          showError("No data received");
+                          return;
+                      }
+
+                      String html = new String(Base64.decode(htmlB64, Base64.DEFAULT), "UTF-8");
+                      
+                      if (html == null || html.isEmpty()) {
+                          showError("Invalid HTML content");
+                          return;
+                      }
+                      
+                      String credits = getCredits();
+                      String footer = "<div style='text-align:center;padding:15px;font-size:12px;color:#666;background:#f5f5f5;border-top:1px solid #ddd;margin-top:10px;'>"
+                          + credits.replace("\n", "<br>")
+                          + "</div>";
+                      
+                      html = html.replace("</body>", footer + "</body>");
+                      
+                      webView.loadDataWithBaseURL("https://app.local/", html, "text/html", "UTF-8", null);
+                  } catch (Exception e) {
+                      Log.e(TAG, "Error loading HTML", e);
+                      showError("Error: " + e.getMessage());
+                  }
+              }
+
+              private boolean isDebuggerConnected() {
+                  return Debug.isDebuggerConnected();
+              }
+
+              private boolean isEmulator() {
+                  try {
+                      String fingerprint = Build.FINGERPRINT != null ? Build.FINGERPRINT : "";
+                      String model = Build.MODEL != null ? Build.MODEL : "";
+                      String product = Build.PRODUCT != null ? Build.PRODUCT : "";
+                      String hardware = Build.HARDWARE != null ? Build.HARDWARE : "";
+                      
+                      return fingerprint.startsWith("generic") || fingerprint.startsWith("unknown")
+                          || model.contains("google_sdk") || model.contains("Emulator") || model.contains("Android SDK")
+                          || product.contains("sdk") || hardware.contains("goldfish") || hardware.contains("ranchu");
+                  } catch (Throwable t) {
+                      return false;
+                  }
+              }
+
+              private void showError(String message) {
+                  String errorHtml = "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+                      + "<meta name='viewport' content='width=device-width,initial-scale=1'><style>"
+                      + "body{font-family:sans-serif;padding:20px;background:#f5f5f5;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;}"
+                      + ".c{background:#fff;border-radius:12px;padding:30px;max-width:400px;width:100%;box-shadow:0 4px 12px rgba(0,0,0,.1);text-align:center;}"
+                      + "h2{color:#E53935;margin-bottom:12px;}p{color:#666;font-size:14px;line-height:1.6;}"
+                      + "</style></head><body><div class='c'><h2>⚠️ Error</h2><p>" + message + "</p></div></body></html>";
+                  webView.loadDataWithBaseURL(null, errorHtml, "text/html", "UTF-8", null);
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (webView != null && webView.canGoBack()) {
+                      webView.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
           }
-          allprojects { repositories { google(); mavenCentral() } }
-          ''')
-          open("android/app/build.gradle", "w").write(f'''apply plugin: 'com.android.application'
-          android {{
-            namespace '{pkg}'
-            compileSdk 34
-            defaultConfig {{
-              applicationId "{pkg}"
-              minSdk 21
-              targetSdk 34
-              versionCode 1
-              versionName "1.0"
-            }}
-            compileOptions {{
-              sourceCompatibility JavaVersion.VERSION_17
-              targetCompatibility JavaVersion.VERSION_17
-            }}
-          }}''')
+          JAVAEOF
 
-          print("Scaffold complete")
-          PY
+          # ===== activity_main.xml =====
+          cat > app/src/main/res/layout/activity_main.xml << LAYOUT
+          <?xml version="1.0" encoding="utf-8"?>
+          <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent">
+              
+              <WebView
+                  android:id="@+id/webView"
+                  android:layout_width="match_parent"
+                  android:layout_height="match_parent" />
+                  
+              <ProgressBar
+                  android:id="@+id/progressBar"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:layout_gravity="center"
+                  android:visibility="gone" />
+                  
+          </FrameLayout>
+          LAYOUT
 
-      - name: Install Gradle
-        run: sudo apt-get update && sudo apt-get install -y gradle
+          # ===== styles.xml =====
+          cat > app/src/main/res/values/styles.xml << STYLES
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="AppTheme" parent="android:Theme.NoTitleBar.Fullscreen">
+                  <item name="android:windowFullscreen">true</item>
+                  <item name="android:windowNoTitle">true</item>
+                  <item name="android:windowActionBar">false</item>
+                  <item name="android:windowContentOverlay">@null</item>
+                  <item name="android:windowBackground">@android:color/white</item>
+              </style>
+          </resources>
+          STYLES
 
-      - name: Build APK with Gradle
+          # ===== strings.xml =====
+          cat > app/src/main/res/values/strings.xml << STRINGS
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">${APP_NAME}</string>
+          </resources>
+          STRINGS
+
+          # ===== Icon (XML) =====
+          cat > app/src/main/res/drawable/ic_launcher.xml << ICON
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android"
+              android:shape="rectangle">
+              <solid android:color="#FF6B00" />
+              <corners android:radius="8dp" />
+          </shape>
+          ICON
+
+          # ===== Keystore =====
+          keytool -genkey -v -keystore app/keystore.jks -keyalg RSA -keysize 2048 -validity 10000 \
+            -alias zenox -storepass zenox123 -keypass zenox123 \
+            -dname "CN=Zenox, O=Zenox, C=IN"
+
+          # ===== app/build.gradle =====
+          cat > app/build.gradle << APPGRADLE
+          apply plugin: 'com.android.application'
+          android {
+              namespace "${PKG_NAME}"
+              compileSdk 34
+              defaultConfig {
+                  applicationId "${PKG_NAME}"
+                  minSdk 21
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+                  externalNativeBuild {
+                      cmake {
+                          cppFlags "-std=c++11 -O2 -fvisibility=hidden"
+                      }
+                  }
+              }
+              externalNativeBuild {
+                  cmake {
+                      path "src/main/jni/CMakeLists.txt"
+                  }
+              }
+              signingConfigs {
+                  release {
+                      storeFile file("keystore.jks")
+                      storePassword "zenox123"
+                      keyAlias "zenox"
+                      keyPassword "zenox123"
+                  }
+              }
+              buildTypes {
+                  release {
+                      minifyEnabled true
+                      shrinkResources true
+                      signingConfig signingConfigs.release
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+                  }
+              }
+          }
+          APPGRADLE
+
+          # ===== ProGuard Rules =====
+          cat > app/proguard-rules.pro << PROGUARD
+          -keep class ${PKG_NAME}.MainActivity { *; }
+          -keepclasseswithmembernames class * { native <methods>; }
+          -keep class android.webkit.** { *; }
+          -dontwarn android.webkit.**
+          PROGUARD
+
+          # ===== Gradle Files =====
+          cat > settings.gradle << SETTINGS
+          rootProject.name = "ZenoxSecure"
+          include ':app'
+          SETTINGS
+
+          cat > build.gradle << GRADLE
+          buildscript {
+              repositories { google(); mavenCentral() }
+              dependencies { classpath 'com.android.tools.build:gradle:8.2.0' }
+          }
+          allprojects {
+              repositories { google(); mavenCentral() }
+          }
+          GRADLE
+
+          cat > gradle.properties << PROPS
+          org.gradle.jvmargs=-Xmx2048m
+          android.useAndroidX=true
+          android.enableJetifier=true
+          android.enableR8.fullMode=false
+          PROPS
+
+          # ===== Gradle Wrapper (Fixed) =====
+          mkdir -p gradle/wrapper
+          gradle wrapper --gradle-version 8.6
+
+      - name: Build APK
         run: |
-          cd android
-          gradle wrapper --gradle-version 8.4
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon
 
       - name: Send APK to Telegram
-        env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          PAYLOAD: ${{ toJson(github.event.client_payload) }}
         run: |
-          echo "$PAYLOAD" > payload.json
-          APK=$(find android -name "*.apk" | head -1)
-          echo "Found: $APK"
-          
-          CHAT_ID=$(python3 -c "import json; print(json.load(open('payload.json'))['chat_id'])")
-          APP_NAME=$(python3 -c "import json; print(json.load(open('payload.json'))['app_name'])")
-          
-          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendDocument" \
-            -F chat_id="$CHAT_ID" \
-            -F document=@"$APK" \
-            -F caption="✅ APK Ready! App: ${APP_NAME}"
+          APP_NAME=$(python3 -c "import json; print(json.load(open('config.json'))['name'])")
+          PKG_SUFFIX=$(python3 -c "import json; print(json.load(open('config.json'))['pkg'])")
+          CHAT_ID=$(python3 -c "import json; print(json.load(open('config.json'))['chat'])")
+
+          APK_PATH="app/build/outputs/apk/release/app-release.apk"
+          if [ -f "$APK_PATH" ]; then
+            SIZE=$(du -k "$APK_PATH" | cut -f1)
+            curl -s -F "chat_id=$CHAT_ID" \
+              -F "document=@$APK_PATH" \
+              -F "caption=✅ Aᴘᴋ Bᴜɪʟᴅ Sᴜᴄᴄᴇssꜰᴜʟʟʏ! 🚀" \
+              "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument"
+          else
+            echo "❌ Fᴀɪʟᴇᴅ Tᴏ Bᴜɪʟᴅ Aᴘᴋ!"
+            exit 1
+          fi
