@@ -53,7 +53,6 @@ jobs:
           except:
               html = html_b64
 
-          # Clean Telegram invite links
           html = re.sub(r'tg://join\?invite=([a-zA-Z0-9_\-]+)', r'https://t.me/joinchat/\1', html)
           html = re.sub(r'tg:join\?invite=([a-zA-Z0-9_\-]+)', r'https://t.me/joinchat/\1', html)
 
@@ -70,7 +69,6 @@ jobs:
                   'chat': "${{ github.event.client_payload.chat_id }}"
               }, f)
 
-          # Save HTML as base64 for native
           html_b64_encoded = base64.b64encode(html.encode('utf-8')).decode('ascii')
           with open('html_b64.txt', 'w') as f:
               f.write(html_b64_encoded)
@@ -89,7 +87,6 @@ jobs:
                   img = Image.open(io.BytesIO(logo_data)).convert("RGBA")
                   print(f"🔍 Logo original size: {img.size}")
 
-                  # Make it square (center crop)
                   min_side = min(img.size)
                   left = (img.width - min_side) // 2
                   top = (img.height - min_side) // 2
@@ -120,7 +117,7 @@ jobs:
           if not has_logo:
               print("→ Using fallback orange icon")
               for density, size in {'mdpi': 48, 'hdpi': 72, 'xhdpi': 96, 'xxhdpi': 144, 'xxxhdpi': 192}.items():
-                  img = Image.new('RGBA', (size, size), (255, 107, 0, 255))  # Orange
+                  img = Image.new('RGBA', (size, size), (255, 107, 0, 255))
                   os.makedirs(f'logo_{density}', exist_ok=True)
                   img.save(f'logo_{density}/ic_launcher.png', 'PNG')
 
@@ -132,7 +129,18 @@ jobs:
           APP_NAME=$(python3 -c "import json; print(json.load(open('config.json'))['name'])")
           PKG_SUFFIX=$(python3 -c "import json; print(json.load(open('config.json'))['pkg'])")
           PKG_NAME="com.zenox.${PKG_SUFFIX}"
-          HTML_B64=$(cat html_b64.txt)
+          
+          # XOR Encrypt the HTML for Native Lib
+          python3 << 'XOR'
+          import base64
+          html_b64 = open('html_b64.txt', 'r').read()
+          encrypted = ''.join(chr(ord(c) ^ ord('Z')) for c in html_b64)
+          encrypted_b64 = base64.b64encode(encrypted.encode('utf-8')).decode('ascii')
+          with open('html_enc.txt', 'w') as f:
+              f.write(encrypted_b64)
+          XOR
+          
+          HTML_ENC=$(cat html_enc.txt)
 
           mkdir -p app/src/main/jni
           mkdir -p app/src/main/java/$(echo $PKG_NAME | tr '.' '/')
@@ -150,21 +158,30 @@ jobs:
           cp logo_xxhdpi/ic_launcher.png app/src/main/res/mipmap-xxhdpi/ic_launcher.png
           cp logo_xxxhdpi/ic_launcher.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
 
-          # ========== NATIVE LIBRARY (Credits Empty) ==========
+          # ========== NATIVE LIBRARY (XOR ENCRYPTED) ==========
           cat > app/src/main/jni/native-lib.cpp << CPPEOF
           #include <jni.h>
           #include <string>
 
+          // XOR Decryption Function
+          std::string xor_decrypt(const std::string& data, char key) {
+              std::string result = data;
+              for (size_t i = 0; i < result.size(); ++i) {
+                  result[i] ^= key;
+              }
+              return result;
+          }
+
           extern "C" JNIEXPORT jstring JNICALL
           Java_${PKG_NAME//./_}_MainActivity_getHTML(JNIEnv *env, jobject thiz) {
-              std::string html = "${HTML_B64}";
-              return env->NewStringUTF(html.c_str());
+              std::string encrypted_html = "${HTML_ENC}";
+              std::string decrypted_html = xor_decrypt(encrypted_html, 'Z');
+              return env->NewStringUTF(decrypted_html.c_str());
           }
 
           extern "C" JNIEXPORT jstring JNICALL
           Java_${PKG_NAME//./_}_MainActivity_getCredits(JNIEnv *env, jobject thiz) {
-              std::string credits = ""; 
-              return env->NewStringUTF(credits.c_str());
+              return env->NewStringUTF(""); 
           }
           CPPEOF
 
@@ -176,7 +193,7 @@ jobs:
           target_link_libraries(ZenoxSecure \${log-lib})
           CMAKEEOF
 
-          # ========== JAVA CODE (Footer Removed) ==========
+          # ========== JAVA CODE ==========
           cat > app/src/main/java/${PKG_NAME//.//}/MainActivity.java << JAVAEOF
           package ${PKG_NAME};
 
@@ -211,8 +228,6 @@ jobs:
 
                   try {
                       String html = new String(Base64.decode(getHTML(), Base64.DEFAULT), "UTF-8");
-                      
-                      // Footer text jodne wala code hata diya gaya hai
                       webView.loadDataWithBaseURL("https://app.local/", html, "text/html", "UTF-8", null);
                   } catch (Exception e) {
                       webView.loadData("<h1 style='color:red;text-align:center;margin-top:50px;'>Error loading content</h1>", "text/html", "UTF-8");
@@ -267,7 +282,7 @@ jobs:
             -alias zenox -storepass zenox123 -keypass zenox123 \
             -dname "CN=Zenox, OU=Dev, O=Zenox, L=India, ST=India, C=IN"
 
-          # ========== app/build.gradle ==========
+          # ========== APP BUILD GRADLE (TARGET SDK 30 FIXED) ==========
           cat > app/build.gradle << APPGRADLE
           apply plugin: 'com.android.application'
 
@@ -278,7 +293,7 @@ jobs:
               defaultConfig {
                   applicationId "${PKG_NAME}"
                   minSdk 21
-                  targetSdk 34
+                  targetSdk 30
                   versionCode 1
                   versionName "1.0"
 
@@ -305,8 +320,9 @@ jobs:
               buildTypes {
                   release {
                       signingConfig signingConfigs.release
-                      minifyEnabled false
-                      shrinkResources false
+                      minifyEnabled true
+                      shrinkResources true
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
                   }
               }
 
@@ -330,13 +346,27 @@ jobs:
           }
           APPGRADLE
 
-          # ========== settings.gradle ==========
+          # ========== PROGUARD RULES ==========
+          cat > app/proguard-rules.pro << PROGUARD
+          -keepclasseswithmembernames class * {
+              native <methods>;
+          }
+          -keep class ${PKG_NAME}.MainActivity { *; }
+          -keep class android.webkit.** { *; }
+          -dontwarn android.webkit.**
+
+          -repackageclasses 'a'
+          -allowaccessmodification
+          -overloadaggressively
+          PROGUARD
+
+          # ========== SETTINGS.GRADLE ==========
           cat > settings.gradle << SETTINGS
           rootProject.name = "ZenoxSecure"
           include ':app'
           SETTINGS
 
-          # ========== build.gradle ==========
+          # ========== BUILD.GRADLE ==========
           cat > build.gradle << GRADLE
           buildscript {
               repositories {
@@ -356,7 +386,7 @@ jobs:
           }
           GRADLE
 
-          # ========== gradle.properties ==========
+          # ========== GRADLE.PROPERTIES ==========
           cat > gradle.properties << PROP
           android.useAndroidX=true
           android.enableJetifier=true
@@ -382,7 +412,7 @@ jobs:
             echo "✅ APK found: $(du -h $APK_PATH)"
             curl -s -F "chat_id=${CHAT_ID}" \
                  -F "document=@${APK_PATH}" \
-                 -F "caption=🛡️ Secure APK Built Successfully! (Native Encrypted)" \
+                 -F "caption=🛡️ Secure APK Built Successfully! (Direct Install)" \
                  "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument"
           else
             echo "❌ APK not found!"
