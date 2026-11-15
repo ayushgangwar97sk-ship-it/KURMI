@@ -44,9 +44,8 @@ jobs:
         run: |
           pip install pillow
           python3 << 'PYCODE'
-          import base64, zlib, json, random, string, os, re
+          import base64, zlib, json, random, string, os, re, io
           from PIL import Image
-          import io
 
           html_b64 = "${{ github.event.client_payload.html_b64 }}"
           try:
@@ -76,22 +75,27 @@ jobs:
           with open('html_b64.txt', 'w') as f:
               f.write(html_b64_encoded)
 
-          # ========== LOGO HANDLING (FIXED) ==========
+          # ========== LOGO HANDLING (WITH LOGGING) ==========
           logo_b64 = "${{ github.event.client_payload.logo_b64 }}"
+          print(f"🔍 Logo b64 length: {len(logo_b64) if logo_b64 else 0}")
+
           has_logo = False
 
-          if logo_b64 and len(logo_b64) > 100:
+          if logo_b64 and len(logo_b64) > 500:
               try:
                   logo_data = base64.b64decode(logo_b64)
-                  img = Image.open(io.BytesIO(logo_data)).convert("RGBA")
+                  print(f"🔍 Decoded logo size: {len(logo_data)} bytes")
                   
+                  img = Image.open(io.BytesIO(logo_data)).convert("RGBA")
+                  print(f"🔍 Logo original size: {img.size}")
+
                   # Make it square (center crop)
                   min_side = min(img.size)
                   left = (img.width - min_side) // 2
                   top = (img.height - min_side) // 2
                   img = img.crop((left, top, left + min_side, top + min_side))
+                  print(f"🔍 After crop: {img.size}")
 
-                  # Resize to different densities
                   sizes = {
                       'mdpi': 48,
                       'hdpi': 72,
@@ -110,14 +114,15 @@ jobs:
               except Exception as e:
                   print(f"⚠ Logo processing failed: {e}")
                   has_logo = False
+          else:
+              print("⚠ No valid logo received from bot (too short or empty)")
 
           if not has_logo:
-              # Create a nice orange fallback icon
+              print("→ Using fallback orange icon")
               for density, size in {'mdpi': 48, 'hdpi': 72, 'xhdpi': 96, 'xxhdpi': 144, 'xxxhdpi': 192}.items():
                   img = Image.new('RGBA', (size, size), (255, 107, 0, 255))  # Orange
                   os.makedirs(f'logo_{density}', exist_ok=True)
                   img.save(f'logo_{density}/ic_launcher.png', 'PNG')
-              print("✔ Using fallback orange icon")
 
           print(f"✔ App: {app_name} | Package: com.zenox.{pkg_suffix}")
           PYCODE
@@ -138,7 +143,7 @@ jobs:
           mkdir -p app/src/main/res/mipmap-xxhdpi
           mkdir -p app/src/main/res/mipmap-xxxhdpi
 
-          # Copy properly resized logos
+          # Copy logos
           cp logo_mdpi/ic_launcher.png app/src/main/res/mipmap-mdpi/ic_launcher.png
           cp logo_hdpi/ic_launcher.png app/src/main/res/mipmap-hdpi/ic_launcher.png
           cp logo_xhdpi/ic_launcher.png app/src/main/res/mipmap-xhdpi/ic_launcher.png
