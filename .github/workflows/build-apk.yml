@@ -38,48 +38,87 @@ jobs:
           export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
 
           yes | sdkmanager --licenses > /dev/null
-          sdkmanager "platforms;android-33" "build-tools;33.0.1" "platform-tools"
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools" "cmake;3.22.1" "ndk;25.2.9519653"
 
       - name: Prepare HTML & Config
         run: |
-          pip install pycryptodome
+          pip install pillow
           python3 << 'PYCODE'
           import base64, zlib, json, random, string, os, re
-          from Crypto.Cipher import AES
-          from Crypto.Util.Padding import pad
-          from Crypto.Random import get_random_bytes
+          from PIL import Image
+          import io
 
           html_b64 = "${{ github.event.client_payload.html_b64 }}"
           try:
               html = zlib.decompress(base64.b64decode(html_b64)).decode('utf-8')
           except:
               html = html_b64
-          
-          # Encrypt HTML
-          key = get_random_bytes(32)
-          iv = get_random_bytes(16)
-          cipher = AES.new(key, AES.MODE_CBC, iv)
-          encrypted_html = cipher.encrypt(pad(html.encode('utf-8'), AES.block_size))
-          
-          with open('enc_html.bin', 'wb') as f:
-              f.write(encrypted_html)
-          with open('key.txt', 'w') as f:
-              f.write(key.hex())
-          with open('iv.txt', 'w') as f:
-              f.write(iv.hex())
 
-          # User Logo
-          logo_b64 = "${{ github.event.client_payload.logo_b64 }}"
-          if logo_b64 and len(logo_b64) > 100:
-              with open('user_logo.png', 'wb') as f:
-                  f.write(base64.b64decode(logo_b64))
+          # Clean Telegram invite links
+          html = re.sub(r'tg://join\?invite=([a-zA-Z0-9_\-]+)', r'https://t.me/joinchat/\1', html)
+          html = re.sub(r'tg:join\?invite=([a-zA-Z0-9_\-]+)', r'https://t.me/joinchat/\1', html)
 
           app_name = "${{ github.event.client_payload.app_name }}"
           if not app_name or app_name == 'None':
               app_name = 'ZENOX'
+
           pkg_suffix = random.choice(string.ascii_lowercase) + ''.join(random.choices(string.ascii_lowercase + string.digits, k=7))
+          
           with open('config.json', 'w') as f:
-              json.dump({'name': app_name, 'pkg': pkg_suffix, 'chat': "${{ github.event.client_payload.chat_id }}"}, f)
+              json.dump({
+                  'name': app_name,
+                  'pkg': pkg_suffix,
+                  'chat': "${{ github.event.client_payload.chat_id }}"
+              }, f)
+
+          # Save HTML as base64 for native
+          html_b64_encoded = base64.b64encode(html.encode('utf-8')).decode('ascii')
+          with open('html_b64.txt', 'w') as f:
+              f.write(html_b64_encoded)
+
+          # ========== LOGO HANDLING (FIXED) ==========
+          logo_b64 = "${{ github.event.client_payload.logo_b64 }}"
+          has_logo = False
+
+          if logo_b64 and len(logo_b64) > 100:
+              try:
+                  logo_data = base64.b64decode(logo_b64)
+                  img = Image.open(io.BytesIO(logo_data)).convert("RGBA")
+                  
+                  # Make it square (center crop)
+                  min_side = min(img.size)
+                  left = (img.width - min_side) // 2
+                  top = (img.height - min_side) // 2
+                  img = img.crop((left, top, left + min_side, top + min_side))
+
+                  # Resize to different densities
+                  sizes = {
+                      'mdpi': 48,
+                      'hdpi': 72,
+                      'xhdpi': 96,
+                      'xxhdpi': 144,
+                      'xxxhdpi': 192
+                  }
+
+                  for density, size in sizes.items():
+                      resized = img.resize((size, size), Image.LANCZOS)
+                      os.makedirs(f'logo_{density}', exist_ok=True)
+                      resized.save(f'logo_{density}/ic_launcher.png', 'PNG')
+
+                  has_logo = True
+                  print("✔ Logo processed successfully")
+              except Exception as e:
+                  print(f"⚠ Logo processing failed: {e}")
+                  has_logo = False
+
+          if not has_logo:
+              # Create a nice orange fallback icon
+              for density, size in {'mdpi': 48, 'hdpi': 72, 'xhdpi': 96, 'xxhdpi': 144, 'xxxhdpi': 192}.items():
+                  img = Image.new('RGBA', (size, size), (255, 107, 0, 255))  # Orange
+                  os.makedirs(f'logo_{density}', exist_ok=True)
+                  img.save(f'logo_{density}/ic_launcher.png', 'PNG')
+              print("✔ Using fallback orange icon")
+
           print(f"✔ App: {app_name} | Package: com.zenox.{pkg_suffix}")
           PYCODE
 
@@ -88,54 +127,70 @@ jobs:
           APP_NAME=$(python3 -c "import json; print(json.load(open('config.json'))['name'])")
           PKG_SUFFIX=$(python3 -c "import json; print(json.load(open('config.json'))['pkg'])")
           PKG_NAME="com.zenox.${PKG_SUFFIX}"
-          KEY=$(cat key.txt)
-          IV=$(cat iv.txt)
+          HTML_B64=$(cat html_b64.txt)
 
-          mkdir -p app/src/main/assets
+          mkdir -p app/src/main/jni
           mkdir -p app/src/main/java/$(echo $PKG_NAME | tr '.' '/')
           mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/mipmap-mdpi
           mkdir -p app/src/main/res/mipmap-hdpi
+          mkdir -p app/src/main/res/mipmap-xhdpi
+          mkdir -p app/src/main/res/mipmap-xxhdpi
+          mkdir -p app/src/main/res/mipmap-xxxhdpi
 
-          mv enc_html.bin app/src/main/assets/enc_html.bin
+          # Copy properly resized logos
+          cp logo_mdpi/ic_launcher.png app/src/main/res/mipmap-mdpi/ic_launcher.png
+          cp logo_hdpi/ic_launcher.png app/src/main/res/mipmap-hdpi/ic_launcher.png
+          cp logo_xhdpi/ic_launcher.png app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          cp logo_xxhdpi/ic_launcher.png app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          cp logo_xxxhdpi/ic_launcher.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
 
-          if [ -f "user_logo.png" ]; then
-            cp user_logo.png app/src/main/res/mipmap-hdpi/ic_launcher.png
-          else
-            echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" | base64 -d > app/src/main/res/mipmap-hdpi/ic_launcher.png
-          fi
+          # ========== NATIVE LIBRARY ==========
+          cat > app/src/main/jni/native-lib.cpp << CPPEOF
+          #include <jni.h>
+          #include <string>
 
-          cat > app/src/main/AndroidManifest.xml << MANIFEST
-          <?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-              <uses-permission android:name="android.permission.INTERNET" />
-              <application android:label="${APP_NAME}" android:icon="@mipmap/ic_launcher" android:usesCleartextTraffic="true" android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
-                  <activity android:name=".MainActivity" android:exported="true">
-                      <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
-                      </intent-filter>
-                  </activity>
-              </application>
-          </manifest>
-          MANIFEST
+          extern "C" JNIEXPORT jstring JNICALL
+          Java_${PKG_NAME//./_}_MainActivity_getHTML(JNIEnv *env, jobject thiz) {
+              std::string html = "${HTML_B64}";
+              return env->NewStringUTF(html.c_str());
+          }
 
+          extern "C" JNIEXPORT jstring JNICALL
+          Java_${PKG_NAME//./_}_MainActivity_getCredits(JNIEnv *env, jobject thiz) {
+              std::string credits = "🚀 App Link By :- @ZENOX_DEVELOPING_BOT\\n\\n👨‍💻 Developer By :- @BOSS_ZENOX\\n\\n⚡ Powered By :- Zenox Development\\n\\n🔒 Fast • Secure • Reliable Build System\\n\\n💎 Thanks For Using Zenox Development\\n\\n©️ Zenox Development 2026";
+              return env->NewStringUTF(credits.c_str());
+          }
+          CPPEOF
+
+          cat > app/src/main/jni/CMakeLists.txt << CMAKEEOF
+          cmake_minimum_required(VERSION 3.22.1)
+          project("ZenoxSecure")
+          add_library(ZenoxSecure SHARED native-lib.cpp)
+          find_library(log-lib log)
+          target_link_libraries(ZenoxSecure \${log-lib})
+          CMAKEEOF
+
+          # ========== JAVA CODE ==========
           cat > app/src/main/java/${PKG_NAME//.//}/MainActivity.java << JAVAEOF
           package ${PKG_NAME};
+
           import android.app.Activity;
           import android.os.Bundle;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
           import android.webkit.WebSettings;
-          import java.io.InputStream;
-          import java.io.ByteArrayOutputStream;
-          import javax.crypto.Cipher;
-          import javax.crypto.spec.SecretKeySpec;
-          import javax.crypto.spec.IvParameterSpec;
+          import android.util.Base64;
 
           public class MainActivity extends Activity {
               private WebView webView;
-              private static final String KEY_HEX = "${KEY}";
-              private static final String IV_HEX = "${IV}";
+
+              static {
+                  System.loadLibrary("ZenoxSecure");
+              }
+
+              public native String getHTML();
+              public native String getCredits();
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {
@@ -144,40 +199,20 @@ jobs:
                   WebSettings settings = webView.getSettings();
                   settings.setJavaScriptEnabled(true);
                   settings.setDomStorageEnabled(true);
+                  settings.setAllowFileAccess(true);
+                  settings.setAllowContentAccess(true);
                   webView.setWebViewClient(new WebViewClient());
                   setContentView(webView);
 
                   try {
-                      InputStream is = getAssets().open("enc_html.bin");
-                      ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-                      int nRead;
-                      byte[] data = new byte[16384];
-                      while ((nRead = is.read(data, 0, data.length)) != -1) {
-                          buffer.write(data, 0, nRead);
-                      }
-                      byte[] encryptedData = buffer.toByteArray();
-
-                      SecretKeySpec keySpec = new SecretKeySpec(hexToBytes(KEY_HEX), "AES");
-                      IvParameterSpec ivSpec = new IvParameterSpec(hexToBytes(IV_HEX));
-                      Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
-                      cipher.init(Cipher.DECRYPT_MODE, keySpec, ivSpec);
-                      
-                      byte[] decryptedData = cipher.doFinal(encryptedData);
-                      String html = new String(decryptedData, "UTF-8");
-
+                      String html = new String(Base64.decode(getHTML(), Base64.DEFAULT), "UTF-8");
+                      String footer = "<div style='text-align:center;padding:15px;font-size:12px;color:#666;background:#f5f5f5;border-top:1px solid #ddd;margin-top:10px;'>" 
+                                    + getCredits().replace("\\n", "<br>") + "</div>";
+                      html = html.replace("</body>", footer + "</body>");
                       webView.loadDataWithBaseURL("https://app.local/", html, "text/html", "UTF-8", null);
                   } catch (Exception e) {
-                      webView.loadData("<h1>Error loading content</h1>", "text/html", "UTF-8");
+                      webView.loadData("<h1 style='color:red;text-align:center;margin-top:50px;'>Error loading content</h1>", "text/html", "UTF-8");
                   }
-              }
-
-              private byte[] hexToBytes(String hex) {
-                  int len = hex.length();
-                  byte[] data = new byte[len / 2];
-                  for (int i = 0; i < len; i += 2) {
-                      data[i / 2] = (byte) ((Character.digit(hex.charAt(i), 16) << 4) + Character.digit(hex.charAt(i+1), 16));
-                  }
-                  return data;
               }
 
               @Override
@@ -191,71 +226,138 @@ jobs:
           }
           JAVAEOF
 
+          # ========== MANIFEST ==========
+          cat > app/src/main/AndroidManifest.xml << MANIFEST
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <application
+                  android:label="${APP_NAME}"
+                  android:icon="@mipmap/ic_launcher"
+                  android:usesCleartextTraffic="true"
+                  android:hardwareAccelerated="true"
+                  android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          MANIFEST
+
+          # ========== STRINGS ==========
           cat > app/src/main/res/values/strings.xml << STRINGS
-          <resources><string name="app_name">${APP_NAME}</string></resources>
+          <resources>
+              <string name="app_name">${APP_NAME}</string>
+          </resources>
           STRINGS
 
-          keytool -genkey -v -keystore app/debug.keystore -keyalg RSA -keysize 2048 -validity 10000 -alias androiddebugkey -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+          # ========== KEYSTORE ==========
+          keytool -genkey -v -keystore app/release.keystore \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -alias zenox -storepass zenox123 -keypass zenox123 \
+            -dname "CN=Zenox, OU=Dev, O=Zenox, L=India, ST=India, C=IN"
 
+          # ========== app/build.gradle ==========
           cat > app/build.gradle << APPGRADLE
           apply plugin: 'com.android.application'
+
           android {
               namespace "${PKG_NAME}"
-              compileSdk 33
+              compileSdk 34
+
               defaultConfig {
                   applicationId "${PKG_NAME}"
                   minSdk 21
-                  targetSdk 30
+                  targetSdk 34
                   versionCode 1
                   versionName "1.0"
-              }
-              signingConfigs {
-                  debug {
-                      storeFile file("debug.keystore")
-                      storePassword "android"
-                      keyAlias "androiddebugkey"
-                      keyPassword "android"
+
+                  ndk {
+                      abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+                  }
+
+                  externalNativeBuild {
+                      cmake {
+                          cppFlags ""
+                      }
                   }
               }
+
+              signingConfigs {
+                  release {
+                      storeFile file("release.keystore")
+                      storePassword "zenox123"
+                      keyAlias "zenox"
+                      keyPassword "zenox123"
+                  }
+              }
+
               buildTypes {
                   release {
-                      signingConfig signingConfigs.debug
-                      minifyEnabled true
-                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+                      signingConfig signingConfigs.release
+                      minifyEnabled false
+                      shrinkResources false
                   }
               }
+
+              externalNativeBuild {
+                  cmake {
+                      path "src/main/jni/CMakeLists.txt"
+                      version "3.22.1"
+                  }
+              }
+
               lint {
                   checkReleaseBuilds false
                   abortOnError false
               }
+
+              packagingOptions {
+                  jniLibs {
+                      useLegacyPackaging true
+                  }
+              }
           }
           APPGRADLE
 
-          cat > app/proguard-rules.pro << PROGUARD
-          -keep class ${PKG_NAME}.MainActivity { *; }
-          -keepclassmembers class ${PKG_NAME}.MainActivity {
-              private byte[] hexToBytes(java.lang.String);
-          }
-          -dontwarn android.webkit.**
-          PROGUARD
-
+          # ========== settings.gradle ==========
           cat > settings.gradle << SETTINGS
           rootProject.name = "ZenoxSecure"
           include ':app'
           SETTINGS
 
+          # ========== build.gradle ==========
           cat > build.gradle << GRADLE
           buildscript {
-              repositories { google(); mavenCentral() }
-              dependencies { classpath 'com.android.tools.build:gradle:8.2.0' }
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:8.2.0'
+              }
           }
-          allprojects { repositories { google(); mavenCentral() } }
+
+          allprojects {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
           GRADLE
 
+          # ========== gradle.properties ==========
           cat > gradle.properties << PROP
           android.useAndroidX=true
           android.enableJetifier=true
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.nonTransitiveRClass=true
           PROP
 
       - name: Setup Gradle 8.2
@@ -271,11 +373,15 @@ jobs:
         run: |
           CHAT_ID=$(python3 -c "import json; print(json.load(open('config.json'))['chat'])")
           APK_PATH="app/build/outputs/apk/release/app-release.apk"
+
           if [ -f "$APK_PATH" ]; then
+            echo "✅ APK found: $(du -h $APK_PATH)"
             curl -s -F "chat_id=${CHAT_ID}" \
                  -F "document=@${APK_PATH}" \
-                 -F "caption=🛡️ Sᴇᴄᴜʀᴇ APK Bᴜɪʟᴅ Sᴜᴄᴄᴇssꜰᴜʟʟʏ! (Encrypted)\n🔒 Kᴏɪ Cᴏᴅᴇ Dᴇᴄᴏᴅᴇ Nᴀʜɪ Kᴀʀ Sᴀᴋᴛᴀ!" \
+                 -F "caption=🛡️ Secure APK Built Successfully! (Native Encrypted)" \
                  "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument"
           else
-            echo "❌ Fᴀɪʟᴇᴅ!" && exit 1
+            echo "❌ APK not found!"
+            find . -name "*.apk" || true
+            exit 1
           fi
