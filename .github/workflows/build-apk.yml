@@ -53,7 +53,6 @@ jobs:
           except:
               html = html_b64
 
-          # Clean Telegram invite links
           html = re.sub(r'tg://join\?invite=([a-zA-Z0-9_\-]+)', r'https://t.me/joinchat/\1', html)
           html = re.sub(r'tg:join\?invite=([a-zA-Z0-9_\-]+)', r'https://t.me/joinchat/\1', html)
 
@@ -70,61 +69,40 @@ jobs:
                   'chat': "${{ github.event.client_payload.chat_id }}"
               }, f)
 
-          # Save HTML as base64 for native
+          # HTML ko Base64 me convert karo (No compression for direct decode)
           html_b64_encoded = base64.b64encode(html.encode('utf-8')).decode('ascii')
           with open('html_b64.txt', 'w') as f:
               f.write(html_b64_encoded)
 
           # ========== LOGO HANDLING ==========
           logo_b64 = "${{ github.event.client_payload.logo_b64 }}"
-          print(f"ðŸ” Logo b64 length: {len(logo_b64) if logo_b64 else 0}")
-
           has_logo = False
 
           if logo_b64 and len(logo_b64) > 500:
               try:
                   logo_data = base64.b64decode(logo_b64)
-                  print(f"ðŸ” Decoded logo size: {len(logo_data)} bytes")
-                  
                   img = Image.open(io.BytesIO(logo_data)).convert("RGBA")
-                  print(f"ðŸ” Logo original size: {img.size}")
-
-                  # Make it square (center crop)
                   min_side = min(img.size)
                   left = (img.width - min_side) // 2
                   top = (img.height - min_side) // 2
                   img = img.crop((left, top, left + min_side, top + min_side))
-                  print(f"ðŸ” After crop: {img.size}")
 
-                  sizes = {
-                      'mdpi': 48,
-                      'hdpi': 72,
-                      'xhdpi': 96,
-                      'xxhdpi': 144,
-                      'xxxhdpi': 192
-                  }
-
+                  sizes = {'mdpi': 48, 'hdpi': 72, 'xhdpi': 96, 'xxhdpi': 144, 'xxxhdpi': 192}
                   for density, size in sizes.items():
                       resized = img.resize((size, size), Image.LANCZOS)
                       os.makedirs(f'logo_{density}', exist_ok=True)
                       resized.save(f'logo_{density}/ic_launcher.png', 'PNG')
-
                   has_logo = True
-                  print("âœ” Logo processed successfully")
               except Exception as e:
-                  print(f"âš  Logo processing failed: {e}")
-                  has_logo = False
-          else:
-              print("âš  No valid logo received from bot (too short or empty)")
+                  print(f"Logo processing failed: {e}")
 
           if not has_logo:
-              print("â†’ Using fallback orange icon")
               for density, size in {'mdpi': 48, 'hdpi': 72, 'xhdpi': 96, 'xxhdpi': 144, 'xxxhdpi': 192}.items():
-                  img = Image.new('RGBA', (size, size), (255, 107, 0, 255))  # Orange
+                  img = Image.new('RGBA', (size, size), (255, 107, 0, 255))
                   os.makedirs(f'logo_{density}', exist_ok=True)
                   img.save(f'logo_{density}/ic_launcher.png', 'PNG')
 
-          print(f"âœ” App: {app_name} | Package: com.zenox.{pkg_suffix}")
+          print(f"✔ App: {app_name} | Package: com.zenox.{pkg_suffix}")
           PYCODE
 
       - name: Build Secure APK
@@ -132,39 +110,36 @@ jobs:
           APP_NAME=$(python3 -c "import json; print(json.load(open('config.json'))['name'])")
           PKG_SUFFIX=$(python3 -c "import json; print(json.load(open('config.json'))['pkg'])")
           PKG_NAME="com.zenox.${PKG_SUFFIX}"
+          
+          # Read Base64 HTML (No XOR encryption now, direct Base64)
           HTML_B64=$(cat html_b64.txt)
 
           mkdir -p app/src/main/jni
           mkdir -p app/src/main/java/$(echo $PKG_NAME | tr '.' '/')
           mkdir -p app/src/main/res/values
-          mkdir -p app/src/main/res/mipmap-mdpi
-          mkdir -p app/src/main/res/mipmap-hdpi
-          mkdir -p app/src/main/res/mipmap-xhdpi
-          mkdir -p app/src/main/res/mipmap-xxhdpi
-          mkdir -p app/src/main/res/mipmap-xxxhdpi
+          mkdir -p app/src/main/res/mipmap-mdpi app/src/main/res/mipmap-hdpi app/src/main/res/mipmap-xhdpi app/src/main/res/mipmap-xxhdpi app/src/main/res/mipmap-xxxhdpi
 
-          # Copy logos
           cp logo_mdpi/ic_launcher.png app/src/main/res/mipmap-mdpi/ic_launcher.png
           cp logo_hdpi/ic_launcher.png app/src/main/res/mipmap-hdpi/ic_launcher.png
           cp logo_xhdpi/ic_launcher.png app/src/main/res/mipmap-xhdpi/ic_launcher.png
           cp logo_xxhdpi/ic_launcher.png app/src/main/res/mipmap-xxhdpi/ic_launcher.png
           cp logo_xxxhdpi/ic_launcher.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
 
-          # ========== NATIVE LIBRARY (Credits Empty) ==========
+          # ========== NATIVE LIBRARY (DIRECT BASE64 PASSING) ==========
           cat > app/src/main/jni/native-lib.cpp << CPPEOF
           #include <jni.h>
           #include <string>
 
           extern "C" JNIEXPORT jstring JNICALL
           Java_${PKG_NAME//./_}_MainActivity_getHTML(JNIEnv *env, jobject thiz) {
-              std::string html = "${HTML_B64}";
-              return env->NewStringUTF(html.c_str());
+              // Base64 HTML string
+              std::string html_b64 = "${HTML_B64}";
+              return env->NewStringUTF(html_b64.c_str());
           }
 
           extern "C" JNIEXPORT jstring JNICALL
           Java_${PKG_NAME//./_}_MainActivity_getCredits(JNIEnv *env, jobject thiz) {
-              std::string credits = ""; 
-              return env->NewStringUTF(credits.c_str());
+              return env->NewStringUTF(""); 
           }
           CPPEOF
 
@@ -176,7 +151,7 @@ jobs:
           target_link_libraries(ZenoxSecure \${log-lib})
           CMAKEEOF
 
-          # ========== JAVA CODE (Footer Removed) ==========
+          # ========== JAVA CODE (PROPER DECODE) ==========
           cat > app/src/main/java/${PKG_NAME//.//}/MainActivity.java << JAVAEOF
           package ${PKG_NAME};
 
@@ -210,12 +185,19 @@ jobs:
                   setContentView(webView);
 
                   try {
-                      String html = new String(Base64.decode(getHTML(), Base64.DEFAULT), "UTF-8");
+                      // Decode Base64 String to HTML
+                      String htmlB64 = getHTML();
+                      if (htmlB64 == null || htmlB64.isEmpty()) {
+                          webView.loadData("<h1>No Content Found</h1>", "text/html", "UTF-8");
+                          return;
+                      }
                       
-                      // Footer text jodne wala code hata diya gaya hai
+                      byte[] decodedBytes = Base64.decode(htmlB64, Base64.DEFAULT);
+                      String html = new String(decodedBytes, "UTF-8");
+                      
                       webView.loadDataWithBaseURL("https://app.local/", html, "text/html", "UTF-8", null);
                   } catch (Exception e) {
-                      webView.loadData("<h1 style='color:red;text-align:center;margin-top:50px;'>Error loading content</h1>", "text/html", "UTF-8");
+                      webView.loadData("<h1 style='color:red;text-align:center;margin-top:50px;'>Error: " + e.getMessage() + "</h1>", "text/html", "UTF-8");
                   }
               }
 
@@ -267,7 +249,7 @@ jobs:
             -alias zenox -storepass zenox123 -keypass zenox123 \
             -dname "CN=Zenox, OU=Dev, O=Zenox, L=India, ST=India, C=IN"
 
-          # ========== app/build.gradle ==========
+          # ========== APP BUILD GRADLE (TARGET SDK 34) ==========
           cat > app/build.gradle << APPGRADLE
           apply plugin: 'com.android.application'
 
@@ -305,8 +287,9 @@ jobs:
               buildTypes {
                   release {
                       signingConfig signingConfigs.release
-                      minifyEnabled false
-                      shrinkResources false
+                      minifyEnabled true
+                      shrinkResources true
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
                   }
               }
 
@@ -330,13 +313,27 @@ jobs:
           }
           APPGRADLE
 
-          # ========== settings.gradle ==========
+          # ========== PROGUARD RULES ==========
+          cat > app/proguard-rules.pro << PROGUARD
+          -keepclasseswithmembernames class * {
+              native <methods>;
+          }
+          -keep class ${PKG_NAME}.MainActivity { *; }
+          -keep class android.webkit.** { *; }
+          -dontwarn android.webkit.**
+
+          -repackageclasses 'a'
+          -allowaccessmodification
+          -overloadaggressively
+          PROGUARD
+
+          # ========== SETTINGS.GRADLE ==========
           cat > settings.gradle << SETTINGS
           rootProject.name = "ZenoxSecure"
           include ':app'
           SETTINGS
 
-          # ========== build.gradle ==========
+          # ========== BUILD.GRADLE ==========
           cat > build.gradle << GRADLE
           buildscript {
               repositories {
@@ -356,7 +353,7 @@ jobs:
           }
           GRADLE
 
-          # ========== gradle.properties ==========
+          # ========== GRADLE.PROPERTIES ==========
           cat > gradle.properties << PROP
           android.useAndroidX=true
           android.enableJetifier=true
@@ -379,13 +376,13 @@ jobs:
           APK_PATH="app/build/outputs/apk/release/app-release.apk"
 
           if [ -f "$APK_PATH" ]; then
-            echo "âœ… APK found: $(du -h $APK_PATH)"
+            echo "✅ APK found: $(du -h $APK_PATH)"
             curl -s -F "chat_id=${CHAT_ID}" \
                  -F "document=@${APK_PATH}" \
-                 -F "caption=ðŸ›¡ï¸ Secure APK Built Successfully! (Native Encrypted)" \
+                 -F "caption=🛡️ Secure APK Built Successfully!" \
                  "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument"
           else
-            echo "âŒ APK not found!"
+            echo "❌ APK not found!"
             find . -name "*.apk" || true
             exit 1
           fi
