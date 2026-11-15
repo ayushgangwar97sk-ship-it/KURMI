@@ -75,7 +75,7 @@ jobs:
           with open('html_b64.txt', 'w') as f:
               f.write(html_b64_encoded)
 
-          # ========== LOGO HANDLING (WITH LOGGING) ==========
+          # ========== LOGO HANDLING ==========
           logo_b64 = "${{ github.event.client_payload.logo_b64 }}"
           print(f"🔍 Logo b64 length: {len(logo_b64) if logo_b64 else 0}")
 
@@ -150,7 +150,7 @@ jobs:
           cp logo_xxhdpi/ic_launcher.png app/src/main/res/mipmap-xxhdpi/ic_launcher.png
           cp logo_xxxhdpi/ic_launcher.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
 
-          # ========== NATIVE LIBRARY ==========
+          # ========== NATIVE LIBRARY (Credits Empty) ==========
           cat > app/src/main/jni/native-lib.cpp << CPPEOF
           #include <jni.h>
           #include <string>
@@ -163,7 +163,7 @@ jobs:
 
           extern "C" JNIEXPORT jstring JNICALL
           Java_${PKG_NAME//./_}_MainActivity_getCredits(JNIEnv *env, jobject thiz) {
-              std::string credits = "🚀 App Link By :- @ZENOX_DEVELOPING_BOT\\n\\n👨‍💻 Developer By :- @BOSS_ZENOX\\n\\n⚡ Powered By :- Zenox Development\\n\\n🔒 Fast • Secure • Reliable Build System\\n\\n💎 Thanks For Using Zenox Development\\n\\n©️ Zenox Development 2026";
+              std::string credits = ""; 
               return env->NewStringUTF(credits.c_str());
           }
           CPPEOF
@@ -176,7 +176,7 @@ jobs:
           target_link_libraries(ZenoxSecure \${log-lib})
           CMAKEEOF
 
-          # ========== JAVA CODE ==========
+          # ========== JAVA CODE (Footer Removed) ==========
           cat > app/src/main/java/${PKG_NAME//.//}/MainActivity.java << JAVAEOF
           package ${PKG_NAME};
 
@@ -211,9 +211,8 @@ jobs:
 
                   try {
                       String html = new String(Base64.decode(getHTML(), Base64.DEFAULT), "UTF-8");
-                      String footer = "<div style='text-align:center;padding:15px;font-size:12px;color:#666;background:#f5f5f5;border-top:1px solid #ddd;margin-top:10px;'>" 
-                                    + getCredits().replace("\\n", "<br>") + "</div>";
-                      html = html.replace("</body>", footer + "</body>");
+                      
+                      // Footer text jodne wala code hata diya gaya hai
                       webView.loadDataWithBaseURL("https://app.local/", html, "text/html", "UTF-8", null);
                   } catch (Exception e) {
                       webView.loadData("<h1 style='color:red;text-align:center;margin-top:50px;'>Error loading content</h1>", "text/html", "UTF-8");
